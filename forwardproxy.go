@@ -25,6 +25,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"github.com/sagernet/uot"
 	"io"
 	"math/rand"
 	"net"
@@ -512,6 +513,15 @@ func (h Handler) dialContextCheckACL(ctx context.Context, network, hostPort stri
 	if err != nil {
 		// return nil, &proxyError{S: err.Error(), Code: http.StatusBadRequest}
 		return nil, caddyhttp.Error(http.StatusBadRequest, err)
+	}
+
+	if host == uot.UOTMagicAddress {
+		udpConn, err := net.ListenUDP("udp", nil)
+		if err != nil {
+			return nil, err
+		}
+
+		return uot.NewServerConn(udpConn), nil
 	}
 
 	if h.upstream != nil {
