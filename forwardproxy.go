@@ -25,7 +25,6 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
-	"github.com/sagernet/uot"
 	"io"
 	"math/rand"
 	"net"
@@ -43,6 +42,7 @@ import (
 	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
 	"github.com/caddyserver/forwardproxy/httpclient"
+	"github.com/sagernet/sing/common/uot"
 	"go.uber.org/zap"
 	"golang.org/x/net/proxy"
 )
