@@ -90,9 +90,11 @@ For a complete list of features and their usage, see Caddyfile syntax:
 
 The simplest way to enable the forward proxy without authentication just include the `forward_proxy` directive in your Caddyfile. However, this allows anyone to use your server as a proxy, which might not be desirable.
 
-The `forward_proxy` directive has no default order and must be used within a `route` directive to explicitly specify its order of evaluation. In the Caddyfile the addresses must start with `:443` for the `forward_proxy` to work for proxy requests of all origins.
+Using the `order` directive you must give the order in which `forward_proxy` and other directives should be used.
 
-Here's an example of all properties in use (note that the syntax is subject to change):
+In the Caddyfile the addresses must start with `:443` for the `forward_proxy` to work for proxy requests of all origins.
+
+Simple example that uses forward_proxy as first priority and as second just shows a webpage (using `file_server` directive) to hide that this is a proxy:
 
 ```
 :443, example.com
@@ -121,12 +123,10 @@ route {
 }
 ```
 
-(The square brackets `[ ]` indicate values you should replace; do not actually include the brackets.)
-
-##### Security
+### Security
 
 - **basic_auth [user] [password]**  
-Sets basic HTTP auth credentials. This property may be repeated multiple times. Note that this is different from Caddy's built-in `basic_auth` directive. BE SURE TO CHECK THE NAME OF THE SITE THAT IS REQUESTING CREDENTIALS BEFORE YOU ENTER THEM.  
+Sets basic HTTP auth credentials. This property can only be supplied once. Note that this is different from Caddy's built-in `basic_auth` directive. BE SURE TO CHECK THE NAME OF THE SITE THAT IS REQUESTING CREDENTIALS BEFORE YOU ENTER THEM.  
 _Default: no authentication required._
 
 - **probe_resistance [secretlink.tld]**  
@@ -142,7 +142,7 @@ Make sure that specified domain name is visitable, does not contain uppercase ch
 Only this address will trigger a 407 response, prompting browsers to request credentials from user and cache them for the rest of the session.
 _Default: no probing resistance._
 
-##### Privacy
+### Privacy
 
 - **hide_ip**  
 If set, forwardproxy will not add user's IP to "Forwarded:" header.  
@@ -154,17 +154,18 @@ If set, forwardproxy will not add Via header, and prevents simple way to detect 
 WARNING: there are other side-channels to determine this.  
 _Default: no hiding; Header in form of `Via: 2.0 caddy` will be sent out._
 
-##### Access Control
+### Access Control
 
-- **ports [integer] [integer]...**  
+- `ports [integer] [integer]...`
 Specifies ports forwardproxy will whitelist for all requests. Other ports will be forbidden.  
 _Default: no restrictions._
 
-- **acl {  
-&nbsp;&nbsp;&nbsp;&nbsp;acl_directive  
-&nbsp;&nbsp;&nbsp;&nbsp;...  
-&nbsp;&nbsp;&nbsp;&nbsp;acl_directive  
-}**  
+-     acl {  
+        acl_directive  
+        ...  
+        acl_directive
+      }
+
 Specifies **order** and rules for allowed destination IP networks, IP addresses and hostnames.
 The hostname in each forwardproxy request will be resolved to an IP address,
 and caddy will check the IP address and hostname against the directives in order until a directive matches the request.
@@ -188,19 +189,21 @@ acl_directive may be:
 	This policy applies to all requests except requests to the proxy's own domain and port.
 	Whitelisting/blacklisting of ports on per-host/IP basis is not supported.  
 _Default policy:_  
+```
 acl {  
-&nbsp;&nbsp;&nbsp;&nbsp;deny 10.0.0.0/8 127.0.0.0/8 172.16.0.0/12 192.168.0.0/16 ::1/128 fe80::/10  
-&nbsp;&nbsp;&nbsp;&nbsp;allow all  
+    deny 10.0.0.0/8 127.0.0.0/8 172.16.0.0/12 192.168.0.0/16 ::1/128 fe80::/10  
+    allow all  
 }  
+```
 _Default deny rules intend to prohibit access to localhost and local networks and may be expanded in future._
 
-##### Timeouts
+### Timeouts
 
 - **dial_timeout [integer]**  
 Sets timeout (in seconds) for establishing TCP connection to target website. Affects all requests.  
 _Default: 20 seconds._
 
-##### Other
+### Other
 
 - **serve_pac [/path.pac]**  
 Generate (in-memory) and serve a [Proxy Auto-Config](https://en.wikipedia.org/wiki/Proxy_auto-config) file on given path. If no path is provided, the PAC file will be served at `/proxy.pac`. NOTE: If you enable probe_resistance, your PAC file should also be served at a secret location; serving it at a predictable path can easily defeat probe resistance.  
@@ -215,17 +218,23 @@ Supported schemes to localhost: socks5, http, https (certificate check is ignore
 _Default: no upstream proxy._
 
 ## Get forwardproxy
-#### Download prebuilt binary
-Binaries are at https://caddyserver.com/download  
-Don't forget to add `http.forwardproxy` plugin.
 
-#### Build from source
+### Download prebuilt binary
 
-0. Install latest Golang 1.20 or above and set export GO111MODULE=on
-1. ```bash
-	 go install github.com/caddyserver/forwardproxy/cmd/caddy@latest
-	 ```   
-	 Built `caddy` binary will be stored in $GOPATH/bin.  
+Linux 64bit binaries are at <https://github.com/klzgrad/forwardproxy/releases>
+
+### Build from source
+
+0. Install Golang 1.14 or above and the `git` client
+1. Checkout repository: `git checkout https://github.com/klzgrad/forwardproxy.git`
+2. Change into directory: `cd forwardproxy`
+3. Install caddyservers xcaddy: `go install github.com/caddyserver/xcaddy/cmd/xcaddy@latest`
+4. Build caddy with forwardproxy: `xcaddy build --with github.com/caddyserver/forwardproxy@master=$PWD`
+5. Result is a `caddy` executable that you can e.g. directly start with `sudo ./caddy run` (create your `Caddyfile` in the same directory)
+
+### Run as daemon
+
+Manually install Caddy as a service on Linux with these instructions: [Systemd unit example](https://github.com/klzgrad/naiveproxy/wiki/Run-Caddy-as-a-daemon)
 
 ## Client Configuration
 
