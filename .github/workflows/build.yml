@@ -14,8 +14,8 @@ jobs:
     env:
       BUNDLE: caddy-forwardproxy-naive
     steps:
-      - uses: actions/checkout@v2
-      - uses: actions/setup-go@v3
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v4
         with:
           go-version: ^1.21.3
       - run: go install github.com/caddyserver/xcaddy/cmd/xcaddy@latest
@@ -27,12 +27,12 @@ jobs:
           tar cJf ${{ env.BUNDLE }}.tar.xz ${{ env.BUNDLE }}
           openssl sha256 ./caddy >sha256sum.txt
           echo "SHA256SUM=$(cut -d' ' -f2 sha256sum.txt)" >>$GITHUB_ENV
-      - uses: actions/upload-artifact@v2
+      - uses: actions/upload-artifact@v3
         with:
           name: ${{ env.BUNDLE }}.tar.xz caddy executable sha256 ${{ env.SHA256SUM }}
           path: sha256sum.txt
       - name: Upload caddy assets
         if: ${{ github.event_name == 'release' }}
-        run: hub release edit -a ${{ env.BUNDLE }}.tar.xz -m "" "${GITHUB_REF##*/}"
+        run: gh release upload "${GITHUB_REF##*/}"  ${{ env.BUNDLE }}.tar.xz --clobber
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
