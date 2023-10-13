@@ -39,7 +39,7 @@ Simple example that uses forward_proxy as first priority and as second just show
 ### Security
 
 - **basic_auth [user] [password]**  
-Sets basic HTTP auth credentials. This property may be repeated multiple times. Note that this is different from Caddy's built-in `basic_auth` directive. BE SURE TO CHECK THE NAME OF THE SITE THAT IS REQUESTING CREDENTIALS BEFORE YOU ENTER THEM.  
+Sets basic HTTP auth credentials. This property can only be supplied once. Note that this is different from Caddy's built-in `basic_auth` directive. BE SURE TO CHECK THE NAME OF THE SITE THAT IS REQUESTING CREDENTIALS BEFORE YOU ENTER THEM.  
 _Default: no authentication required._
 
 - **probe_resistance [secretlink.tld]**  
@@ -69,23 +69,24 @@ _Default: no hiding; Header in form of `Via: 2.0 caddy` will be sent out._
 
 ### Access Control
 
-- **ports [integer] [integer]...**  
+- `ports [integer] [integer]...`
 Specifies ports forwardproxy will whitelist for all requests. Other ports will be forbidden.  
 _Default: no restrictions._
 
-- **acl {  
-&nbsp;&nbsp;&nbsp;&nbsp;acl_directive  
-&nbsp;&nbsp;&nbsp;&nbsp;...  
-&nbsp;&nbsp;&nbsp;&nbsp;acl_directive  
-}**  
+-     acl {  
+        acl_directive  
+        ...  
+        acl_directive
+      }
+
 Specifies **order** and rules for allowed destination IP networks, IP addresses and hostnames.
 The hostname in each forwardproxy request will be resolved to an IP address,
 and caddy will check the IP address and hostname against the directives in order until a directive matches the request.
 acl_directive may be:
-  - **allow [ip or subnet or hostname] [ip or subnet or hostname]...**
-  - **allow_file /path/to/whitelist.txt**
-  - **deny [ip or subnet or hostname] [ip or subnet or hostname]...**
-  - **deny_file /path/to/blacklist.txt**
+  - `allow [ip or subnet or hostname] [ip or subnet or hostname]...`
+  - `allow_file /path/to/whitelist.txt`
+  - `deny [ip or subnet or hostname] [ip or subnet or hostname]...`
+  - `deny_file /path/to/blacklist.txt`
 
   If you don't want unmatched requests to be subject to the default policy, you could finish
   your acl rules with one of the following to specify action on unmatched requests:
@@ -101,10 +102,12 @@ acl_directive may be:
   This policy applies to all requests except requests to the proxy's own domain and port.
   Whitelisting/blacklisting of ports on per-host/IP basis is not supported.  
 _Default policy:_  
+```
 acl {  
-&nbsp;&nbsp;&nbsp;&nbsp;deny 10.0.0.0/8 127.0.0.0/8 172.16.0.0/12 192.168.0.0/16 ::1/128 fe80::/10  
-&nbsp;&nbsp;&nbsp;&nbsp;allow all  
+    deny 10.0.0.0/8 127.0.0.0/8 172.16.0.0/12 192.168.0.0/16 ::1/128 fe80::/10  
+    allow all  
 }  
+```
 _Default deny rules intend to prohibit access to localhost and local networks and may be expanded in future._
 
 ### Timeouts
