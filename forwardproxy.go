@@ -491,13 +491,22 @@ func (h Handler) dialContextCheckACL(ctx context.Context, network, hostPort stri
 		return nil, caddyhttp.Error(http.StatusBadRequest, err)
 	}
 
-	if host == uot.UOTMagicAddress {
+	if host == uot.MagicAddress {
 		udpConn, err := net.ListenUDP("udp", nil)
 		if err != nil {
 			return nil, err
 		}
 
-		return uot.NewServerConn(udpConn), nil
+		return uot.NewServerConn(udpConn, uot.Version), nil
+	}
+
+	if host == uot.LegacyMagicAddress {
+		udpConn, err := net.ListenUDP("udp", nil)
+		if err != nil {
+			return nil, err
+		}
+
+		return uot.NewServerConn(udpConn, uot.LegacyVersion), nil
 	}
 
 	if h.upstream != nil {
