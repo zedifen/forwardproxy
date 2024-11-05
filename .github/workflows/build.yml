@@ -10,16 +10,20 @@ defaults:
     shell: bash
 jobs:
   build_caddy_with_naive:
+    strategy:
+      matrix:
+        target_os: [linux]
+        target_arch: [amd64, arm64]
     runs-on: ubuntu-22.04
     env:
-      BUNDLE: caddy-forwardproxy-naive
+      BUNDLE: caddy-forwardproxy-naive-${{ matrix.target_os }}-${{ matrix.target_arch }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version: ^1.21.9
       - run: go install github.com/caddyserver/xcaddy/cmd/xcaddy@latest
-      - run: ~/go/bin/xcaddy build --with github.com/caddyserver/forwardproxy@master=$PWD
+      - run: GOOS=${{ matrix.target_os }} GOARCH=${{ matrix.target_arch }} ~/go/bin/xcaddy build --with github.com/caddyserver/forwardproxy@master=$PWD
       - name: Pack naiveproxy assets
         run: |
           mkdir ${{ env.BUNDLE }}
