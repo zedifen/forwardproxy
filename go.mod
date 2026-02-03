@@ -4,7 +4,7 @@ go 1.25
 
 require (
 	github.com/caddyserver/caddy/v2 v2.10.2
-	github.com/sagernet/sing v0.6.11
+	github.com/sagernet/sing v0.7.18
 	go.uber.org/zap v1.27.0
 	golang.org/x/net v0.42.0
 )
