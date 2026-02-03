@@ -3,13 +3,13 @@ module github.com/caddyserver/forwardproxy
 go 1.25.0
 
 require (
-	github.com/caddyserver/caddy/v2 v2.11.1
+	github.com/caddyserver/caddy/v2 v2.11.2-0.20260304043049-2dbcdefbbee6
 	github.com/dunglas/httpsfv v1.1.0
 	github.com/quic-go/quic-go v0.59.0
 	github.com/sagernet/sing v0.8.1
 	go.uber.org/mock v0.6.0
 	go.uber.org/zap v1.27.1
-	golang.org/x/net v0.50.0
+	golang.org/x/net v0.51.0
 )
 
 require (
