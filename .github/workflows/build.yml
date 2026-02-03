@@ -1,7 +1,7 @@
 name: Build
 on:
   push:
-    branches: [naive]
+    branches: [naive, naive-master]
     paths-ignore: [README.md]
   release:
     types: [published]
