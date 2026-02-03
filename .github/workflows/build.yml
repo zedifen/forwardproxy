@@ -18,15 +18,15 @@ jobs:
     env:
       BUNDLE: caddy-forwardproxy-naive-${{ matrix.target_os }}-${{ matrix.target_arch }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - run: printf 'CADDY_VERSION=%s\n' "$(<CADDY_VERSION)" >> "$GITHUB_ENV"
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           repository: caddyserver/caddy
           ref: ${{ env.CADDY_VERSION }}
           path: .caddy-bbr
       - run: git -C .caddy-bbr apply "$GITHUB_WORKSPACE/caddy-sing-quic-bbrv1.patch"
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version: ^1.26.x
       - run: go install github.com/caddyserver/xcaddy/cmd/xcaddy@latest
@@ -38,7 +38,7 @@ jobs:
           tar cJf ${{ env.BUNDLE }}.tar.xz ${{ env.BUNDLE }}
           openssl sha256 ./caddy >sha256sum.txt
           echo "SHA256SUM=$(cut -d' ' -f2 sha256sum.txt)" >>$GITHUB_ENV
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: ${{ env.BUNDLE }}.tar.xz caddy executable sha256 ${{ env.SHA256SUM }}
           path: sha256sum.txt
