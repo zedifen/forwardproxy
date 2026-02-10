@@ -1481,6 +1481,12 @@ func (ds *DatagramSender) SendDatagram(data Datagram) error {
 	return err
 }
 
+type udpPacketStream interface {
+	io.Reader
+	SendDatagram([]byte) error
+	ReceiveDatagram(context.Context) ([]byte, error)
+}
+
 type udpProxyServer struct {
 	*zap.Logger
 	Matcher RequestMatcher
@@ -1614,7 +1620,7 @@ func (srv udpProxyServer) HandleStreamBind(c io.ReadWriter, req Request, rc *net
 	return nil
 }
 
-func (srv udpProxyServer) HandlePacket(str http3.Stream, req Request, rc *net.UDPConn) error {
+func (srv udpProxyServer) HandlePacket(str udpPacketStream, req Request, rc *net.UDPConn) error {
 	// https://github.com/quic-go/masque-go/issues/64
 	if req == "*" {
 		return srv.HandlePacketBind(str, req, rc)
@@ -1674,7 +1680,7 @@ func (srv udpProxyServer) HandlePacket(str http3.Stream, req Request, rc *net.UD
 				return err
 			}
 		}
-	}(quicvarint.NewReader(&str)); errors.Is(err, io.EOF) {
+	}(quicvarint.NewReader(str)); errors.Is(err, io.EOF) {
 	}
 
 	<-done
@@ -1682,7 +1688,7 @@ func (srv udpProxyServer) HandlePacket(str http3.Stream, req Request, rc *net.UD
 	return nil
 }
 
-func (srv udpProxyServer) HandlePacketBind(str http3.Stream, req Request, c *net.UDPConn) error {
+func (srv udpProxyServer) HandlePacketBind(str udpPacketStream, req Request, c *net.UDPConn) error {
 	return fmt.Errorf("connect-udp-bind over http3 is not supported yet")
 }
 
@@ -1924,7 +1930,7 @@ func (h Handler) tryUDPoverHTTP(w http.ResponseWriter, r *http.Request) (bool, e
 		w.Header().Set(http3.CapsuleProtocolHeader, CapsuleProtocolHeaderValue)
 		w.WriteHeader(http.StatusOK)
 
-		return true, h.udpProxyServer.HandlePacket(*(w.(http3.HTTPStreamer).HTTPStream()), req, rconn)
+		return true, h.udpProxyServer.HandlePacket(w.(http3.HTTPStreamer).HTTPStream(), req, rconn)
 	default:
 		return false, nil
 	}
