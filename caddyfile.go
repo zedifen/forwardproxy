@@ -99,6 +99,13 @@ func (h *Handler) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 			}
 			h.HideVia = true
 
+		case "hide_extended_connect_setting":
+			args := d.RemainingArgs()
+			if len(args) != 0 {
+				return d.ArgErr()
+			}
+			h.HideExtendedConnectSetting = true
+
 		case "disable_insecure_upstreams_check":
 			args := d.RemainingArgs()
 			if len(args) != 0 {

@@ -66,6 +66,11 @@ type Handler struct {
 	// If true, the Via header will not be added.
 	HideVia bool `json:"hide_via,omitempty"`
 
+	// If true, HTTP/2 SETTINGS_ENABLE_CONNECT_PROTOCOL will not be advertised.
+	// This also disables HTTP/2 Extended CONNECT request handling because the
+	// underlying HTTP/2 server uses one gate for both behaviors.
+	HideExtendedConnectSetting bool `json:"hide_extended_connect_setting,omitempty"`
+
 	// If true, the strict check preventing HTTP upstreams will be disabled.
 	DisableInsecureUpstreamsCheck bool `json:"disable_insecure_upstreams_check,omitempty"`
 
@@ -104,7 +109,8 @@ type Handler struct {
 	dialContext func(ctx context.Context, network, address string) (net.Conn, error)
 	upstream    *url.URL // address of upstream proxy
 
-	aclRules []aclRule
+	aclRules                             []aclRule
+	hideExtendedConnectSettingRegistered bool
 
 	// TODO: temporary/deprecated - we should try to reuse existing authentication modules instead!
 	AuthCredentials [][]byte `json:"auth_credentials,omitempty"` // slice with base64-encoded credentials
@@ -121,6 +127,7 @@ func (Handler) CaddyModule() caddy.ModuleInfo {
 // Provision ensures that h is set up properly before use.
 func (h *Handler) Provision(ctx caddy.Context) error {
 	h.logger = ctx.Logger(h)
+	h.registerHiddenExtendedConnectSetting()
 
 	if h.DialTimeout <= 0 {
 		h.DialTimeout = caddy.Duration(30 * time.Second)
@@ -245,6 +252,12 @@ func (h *Handler) Provision(ctx caddy.Context) error {
 	return nil
 }
 
+// Cleanup releases process-wide configuration owned by h.
+func (h *Handler) Cleanup() error {
+	h.unregisterHiddenExtendedConnectSetting()
+	return nil
+}
+
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhttp.Handler) error {
 	// start by splitting the request host and port
 	reqHost, _, err := net.SplitHostPort(r.Host)
@@ -295,6 +308,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyht
 	}
 
 	if r.Method == http.MethodConnect {
+		if protocol := connectProtocol(r); protocol != "" {
+			if protocol != connectUDPProtocol {
+				return caddyhttp.Error(http.StatusMethodNotAllowed,
+					fmt.Errorf("unsupported Extended CONNECT protocol %q", protocol))
+			}
+			return h.serveConnectUDP(w, r)
+		}
+
 		if r.ProtoMajor == 2 || r.ProtoMajor == 3 {
 			if len(r.URL.Scheme) > 0 || len(r.URL.Path) > 0 {
 				return caddyhttp.Error(http.StatusBadRequest,
@@ -503,7 +524,8 @@ func (h Handler) servePacFile(w http.ResponseWriter, r *http.Request) error {
 func (h Handler) dialContextCheckACL(ctx context.Context, network, hostPort string) (net.Conn, error) {
 	var conn net.Conn
 
-	if network != "tcp" && network != "tcp4" && network != "tcp6" {
+	if network != "tcp" && network != "tcp4" && network != "tcp6" &&
+		network != "udp" && network != "udp4" && network != "udp6" {
 		// return nil, &proxyError{S: "Network " + network + " is not supported", Code: http.StatusBadRequest}
 		return nil, caddyhttp.Error(http.StatusBadRequest,
 			fmt.Errorf("network %s is not supported", network))
@@ -873,6 +895,7 @@ func readLinesFromFile(filename string) ([]string, error) {
 // Interface guards
 var (
 	_ caddy.Provisioner           = (*Handler)(nil)
+	_ caddy.CleanerUpper          = (*Handler)(nil)
 	_ caddyhttp.MiddlewareHandler = (*Handler)(nil)
 	_ caddyfile.Unmarshaler       = (*Handler)(nil)
 )
