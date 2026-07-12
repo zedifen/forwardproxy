@@ -238,6 +238,52 @@ By default, forwardproxy will reuse connections by using Go's built-in connectio
 
   Default: no upstream proxy.
 
+## MASQUE CONNECT-UDP
+
+HTTP/2 and HTTP/3 Extended CONNECT requests with `:protocol = connect-udp`
+are supported using the Capsule Protocol. The target can use the default URI
+template from RFC 9298:
+
+```
+/.well-known/masque/udp/{target_host}/{target_port}/
+```
+
+The trailing slash is optional.
+
+Query-based templates using `h`/`p` or `target_host`/`target_port` are also
+accepted, in either parameter order and with other query parameters between
+them.
+
+DATAGRAM capsules with context ID 0 are relayed to a connected UDP socket and
+UDP replies are returned as DATAGRAM capsules. The existing ACL and
+`allowed_ports` settings apply to UDP targets. Chaining CONNECT-UDP through the
+`upstream` HTTP proxy option is not supported.
+
+Build the server with the current Caddy release:
+
+```bash
+xcaddy build --with github.com/caddyserver/forwardproxy="$PWD"
+```
+
+The module enables Extended CONNECT handling and advertises
+`SETTINGS_ENABLE_CONNECT_PROTOCOL` for HTTP/2 automatically. HTTP/3 advertises
+Extended CONNECT support as well. No `GODEBUG` setting is required.
+
+Some clients (notably browsers) may start using Extended CONNECT for other
+protocols as soon as the HTTP/2 setting is advertised. To suppress the HTTP/2
+setting, add the compatibility option below to the `forward_proxy` block:
+
+```caddyfile
+forward_proxy {
+	hide_extended_connect_setting
+}
+```
+
+With the current Go HTTP/2 implementation, suppressing the setting also
+disables HTTP/2 Extended CONNECT handling process-wide. If multiple
+`forward_proxy` handlers are active, the setting remains hidden while any of
+them requests this option. HTTP/3 is unaffected.
+
 ## Get forwardproxy
 ### Download prebuilt binary
 Binaries are at https://caddyserver.com/download  
