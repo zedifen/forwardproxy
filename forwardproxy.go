@@ -295,7 +295,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyht
 			fmt.Errorf("unsupported HTTP major version: %d", r.ProtoMajor))
 	}
 
-	ctx := context.Background()
+	ctx := r.Context()
 	if !h.HideIP {
 		ctxHeader := make(http.Header)
 		for k, v := range r.Header {
@@ -677,7 +677,6 @@ func serveHiddenPage(w http.ResponseWriter, authErr error) error {
 // Hijacks the connection from ResponseWriter, writes the response and proxies data between targetConn
 // and hijacked connection.
 func serveHijack(w http.ResponseWriter, targetConn net.Conn) error {
-	w.WriteHeader(http.StatusOK)
 	clientConn, brw, err := http.NewResponseController(w).Hijack()
 	if err != nil {
 		return caddyhttp.Error(http.StatusInternalServerError,
@@ -688,7 +687,9 @@ func serveHijack(w http.ResponseWriter, targetConn net.Conn) error {
 	// snippet borrowed from `proxy` plugin
 	if n := brw.Reader.Buffered(); n > 0 {
 		rbuf, _ := brw.Peek(n)
-		_, _ = targetConn.Write(rbuf)
+		if err := writeFull(targetConn, rbuf); err != nil {
+			return fmt.Errorf("failed to forward buffered client data: %w", err)
+		}
 	}
 	err = brw.Flush()
 	if err != nil {
@@ -706,106 +707,234 @@ const (
 	NumFirstPaddings = 8
 )
 
-// Copies data target->clientReader and clientWriter->target, and flushes as needed
-// Returns when clientWriter-> target stream is done.
-// Caddy should finish writing target -> clientReader.
+// Copies clientReader->target and target->clientWriter, flushing framed HTTP
+// responses as needed. A clean client EOF half-closes the target so it can send
+// its final response; all other completions close both directions.
 func dualStream(target net.Conn, clientReader io.ReadCloser, clientWriter io.Writer, padding bool) error {
 	stream := func(w io.Writer, r io.Reader, paddingType int) error {
-		// copy bytes from r to w
-		bufPtr := bufferPool.Get().(*[]byte)
-		buf := *bufPtr
-		buf = buf[0:cap(buf)]
-		_, _err := flushingIoCopy(w, r, buf, paddingType)
-		bufferPool.Put(bufPtr)
-
-		if cw, ok := w.(closeWriter); ok {
-			_ = cw.CloseWrite()
+		_, copyErr := relayCopy(w, r, paddingType)
+		if copyErr == nil {
+			if cw, ok := w.(closeWriter); ok {
+				_ = cw.CloseWrite()
+			}
 		}
-		return _err
+		return copyErr
 	}
+
+	clientToTargetDone := make(chan error, 1)
+	clientToTarget := NoPadding
+	targetToClient := NoPadding
 	if padding {
-		go stream(target, clientReader, RemovePadding)
-		return stream(clientWriter, target, AddPadding)
+		clientToTarget = RemovePadding
+		targetToClient = AddPadding
 	}
-	go stream(target, clientReader, NoPadding) //nolint: errcheck
-	return stream(clientWriter, target, NoPadding)
+
+	go func() {
+		err := stream(target, clientReader, clientToTarget)
+		clientToTargetDone <- err
+		if err != nil {
+			// An abnormal client-side termination must also unblock the
+			// target-to-client copy. A clean EOF only half-closes target.
+			_ = target.Close()
+		}
+	}()
+
+	targetToClientErr := stream(clientWriter, target, targetToClient)
+
+	// If the upload finished first, preserve its error as the cause of a
+	// target-side close. Otherwise the download completion owns shutdown and
+	// any upload error induced by these closes is secondary.
+	var clientToTargetErr error
+	clientToTargetFinished := false
+	select {
+	case clientToTargetErr = <-clientToTargetDone:
+		clientToTargetFinished = true
+	default:
+	}
+
+	_ = target.Close()
+	_ = clientReader.Close()
+	if !clientToTargetFinished {
+		clientToTargetErr = <-clientToTargetDone
+	}
+	if clientToTargetFinished && clientToTargetErr != nil {
+		return clientToTargetErr
+	}
+	return targetToClientErr
 }
 
 type closeWriter interface {
 	CloseWrite() error
 }
 
-// flushingIoCopy is analogous to buffering io.Copy(), but also attempts to flush on each iteration.
-// If dst does not implement http.Flusher(e.g. net.TCPConn), it will do a simple io.CopyBuffer().
-// Reasoning: http2ResponseWriter will not flush on its own, so we have to do it manually.
-func flushingIoCopy(dst io.Writer, src io.Reader, buf []byte, paddingType int) (written int64, err error) {
+// relayCopy copies one direction of a tunnel. Raw TCP pairs use io.Copy so the
+// standard library can select platform zero-copy paths such as Linux splice.
+// Framed HTTP streams retain an explicit buffer because they need flushing and
+// cannot use kernel-to-kernel copying.
+func relayCopy(dst io.Writer, src io.Reader, paddingType int) (written int64, err error) {
 	rw, ok := dst.(http.ResponseWriter)
 	var rc *http.ResponseController
 	if ok {
 		rc = http.NewResponseController(rw)
 	}
-	var numPadding int
-	for {
-		var nr int
-		var er error
-		if paddingType == AddPadding && numPadding < NumFirstPaddings {
-			numPadding++
-			paddingSize := rand.Intn(256)
-			maxRead := 65536 - 3 - paddingSize
-			nr, er = src.Read(buf[3:maxRead])
-			if nr > 0 {
-				buf[0] = byte(nr / 256)
-				buf[1] = byte(nr % 256)
-				buf[2] = byte(paddingSize)
-				for i := 0; i < paddingSize; i++ {
-					buf[3+nr+i] = 0
-				}
-				nr += 3 + paddingSize
+
+	if paddingType != NoPadding {
+		prefixWritten, complete, prefixErr := copyPaddingPrefix(dst, src, rc, paddingType)
+		written += prefixWritten
+		if complete || prefixErr != nil {
+			return written, prefixErr
+		}
+	}
+
+	if rc == nil {
+		if _, srcOK := src.(*net.TCPConn); srcOK {
+			if _, dstOK := dst.(*net.TCPConn); dstOK {
+				n, copyErr := io.Copy(dst, src)
+				return written + n, copyErr
 			}
-		} else if paddingType == RemovePadding && numPadding < NumFirstPaddings {
-			numPadding++
-			nr, er = io.ReadFull(src, buf[0:3])
-			if nr > 0 {
-				nr = int(buf[0])*256 + int(buf[1])
-				paddingSize := int(buf[2])
-				nr, er = io.ReadFull(src, buf[0:nr])
-				if nr > 0 {
-					var junk [256]byte
-					_, er = io.ReadFull(src, junk[0:paddingSize])
-				}
+		}
+	}
+
+	bufPtr := relayBufferPool.Get().(*[]byte)
+	buf := *bufPtr
+	defer relayBufferPool.Put(bufPtr)
+	n, copyErr := copyBufferWithFlush(dst, src, buf, rc)
+	return written + n, copyErr
+}
+
+// copyPaddingPrefix transforms the first NumFirstPaddings records. complete is
+// true when the input ended; false means the caller should continue as a raw
+// byte stream. No partial padded payload is ever forwarded.
+func copyPaddingPrefix(dst io.Writer, src io.Reader, rc *http.ResponseController, paddingType int) (written int64, complete bool, err error) {
+	switch paddingType {
+	case AddPadding:
+		return copyAddedPaddingPrefix(dst, src, rc)
+	case RemovePadding:
+		return copyRemovedPaddingPrefix(dst, src, rc)
+	default:
+		panic("invalid padding type")
+	}
+}
+
+func copyAddedPaddingPrefix(dst io.Writer, src io.Reader, rc *http.ResponseController) (written int64, complete bool, err error) {
+	bufPtr := paddingBufferPool.Get().(*[]byte)
+	buf := *bufPtr
+	defer paddingBufferPool.Put(bufPtr)
+
+	for numPadding := 0; numPadding < NumFirstPaddings; {
+		paddingSize := rand.Intn(256)
+		maxRead := len(buf) - paddingHeaderSize - paddingSize
+		nr, readErr := src.Read(buf[paddingHeaderSize : paddingHeaderSize+maxRead])
+		if nr == 0 {
+			if readErr == io.EOF {
+				return written, true, nil
+			}
+			if readErr != nil {
+				return written, true, readErr
+			}
+			continue
+		}
+		buf[0] = byte(nr >> 8)
+		buf[1] = byte(nr)
+		buf[2] = byte(paddingSize)
+		clear(buf[paddingHeaderSize+nr : paddingHeaderSize+nr+paddingSize])
+		nr += paddingHeaderSize + paddingSize
+
+		nw, writeErr := writeAndFlush(dst, buf[:nr], rc)
+		written += int64(nw)
+		if writeErr != nil {
+			return written, true, writeErr
+		}
+		numPadding++
+		if readErr != nil {
+			if readErr == io.EOF {
+				return written, true, nil
+			}
+			return written, true, readErr
+		}
+	}
+	return written, false, nil
+}
+
+func copyRemovedPaddingPrefix(dst io.Writer, src io.Reader, rc *http.ResponseController) (written int64, complete bool, err error) {
+	scratchPtr := paddingScratchPool.Get().(*[paddingHeaderSize + 256]byte)
+	scratch := scratchPtr[:]
+	header := scratch[:paddingHeaderSize]
+	junk := scratch[paddingHeaderSize:]
+	defer paddingScratchPool.Put(scratchPtr)
+
+	for range NumFirstPaddings {
+		if _, readErr := io.ReadFull(src, header); readErr != nil {
+			if readErr == io.EOF {
+				return written, true, nil
+			}
+			return written, true, readErr
+		}
+
+		payloadSize := int(header[0])<<8 | int(header[1])
+		paddingSize := int(header[2])
+		bufPtr := paddingBufferPool.Get().(*[]byte)
+		buf := *bufPtr
+
+		if _, readErr := io.ReadFull(src, buf[:payloadSize]); readErr != nil {
+			paddingBufferPool.Put(bufPtr)
+			return written, true, readErr
+		}
+		if _, readErr := io.ReadFull(src, junk[:paddingSize]); readErr != nil {
+			paddingBufferPool.Put(bufPtr)
+			return written, true, readErr
+		}
+
+		if payloadSize > 0 {
+			nw, writeErr := writeAndFlush(dst, buf[:payloadSize], rc)
+			written += int64(nw)
+			paddingBufferPool.Put(bufPtr)
+			if writeErr != nil {
+				return written, true, writeErr
 			}
 		} else {
-			nr, er = src.Read(buf)
+			paddingBufferPool.Put(bufPtr)
 		}
+	}
+	return written, false, nil
+}
+
+// copyBufferWithFlush is io.CopyBuffer's explicit-buffer loop with optional
+// ResponseWriter flushing. HTTP/2 and HTTP/3 response writers otherwise may
+// retain interactive tunnel data.
+func copyBufferWithFlush(dst io.Writer, src io.Reader, buf []byte, rc *http.ResponseController) (written int64, err error) {
+	for {
+		nr, er := src.Read(buf)
 		if nr > 0 {
-			nw, ew := dst.Write(buf[0:nr])
-			if nw > 0 {
-				written += int64(nw)
-			}
-			if ew != nil {
-				err = ew
-				break
-			}
-			if rc != nil {
-				ef := rc.Flush()
-				if ef != nil {
-					err = ef
-					break
-				}
-			}
-			if nr != nw {
-				err = io.ErrShortWrite
-				break
+			nw, writeErr := writeAndFlush(dst, buf[:nr], rc)
+			written += int64(nw)
+			if writeErr != nil {
+				return written, writeErr
 			}
 		}
 		if er != nil {
 			if er != io.EOF {
-				err = er
+				return written, er
 			}
-			break
+			return written, nil
 		}
 	}
-	return
+}
+
+func writeAndFlush(dst io.Writer, p []byte, rc *http.ResponseController) (int, error) {
+	n, err := dst.Write(p)
+	if err != nil {
+		return n, err
+	}
+	if n != len(p) {
+		return n, io.ErrShortWrite
+	}
+	if rc != nil {
+		if err := rc.Flush(); err != nil {
+			return n, err
+		}
+	}
+	return n, nil
 }
 
 // Removes hop-by-hop headers, and writes response into ResponseWriter.
@@ -820,11 +949,10 @@ func forwardResponse(w http.ResponseWriter, response *http.Response) error {
 	}
 	removeHopByHop(w.Header())
 	w.WriteHeader(response.StatusCode)
-	bufPtr := bufferPool.Get().(*[]byte)
+	bufPtr := relayBufferPool.Get().(*[]byte)
 	buf := *bufPtr
-	buf = buf[0:cap(buf)]
 	_, err := io.CopyBuffer(w, response.Body, buf)
-	bufferPool.Put(bufPtr)
+	relayBufferPool.Put(bufPtr)
 	return err
 }
 
@@ -858,10 +986,29 @@ function FindProxyForURL(url, host) {
 }
 `
 
-var bufferPool = sync.Pool{
+const (
+	relayBufferSize   = 32 * 1024
+	paddingBufferSize = 64 * 1024
+	paddingHeaderSize = 3
+)
+
+var relayBufferPool = sync.Pool{
 	New: func() interface{} {
-		buffer := make([]byte, 0, 64*1024)
+		buffer := make([]byte, relayBufferSize)
 		return &buffer
+	},
+}
+
+var paddingBufferPool = sync.Pool{
+	New: func() interface{} {
+		buffer := make([]byte, paddingBufferSize)
+		return &buffer
+	},
+}
+
+var paddingScratchPool = sync.Pool{
+	New: func() interface{} {
+		return new([paddingHeaderSize + 256]byte)
 	},
 }
 

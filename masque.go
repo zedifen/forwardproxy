@@ -23,6 +23,7 @@ const (
 
 	maxUDPPayloadSize      = 65535
 	maxDatagramCapsuleSize = maxUDPPayloadSize + 1 // one-byte context ID 0
+	maxCapsuleHeaderSize   = 17                    // two eight-byte varints plus one-byte context ID
 
 	defaultURITemplatePattern        = `^/\.well-known/masque/udp/([^/?#]+)/([0-9]{1,5})/?([?#].*)?$`
 	shortHostFirstURITemplatePattern = `(^|[?&])h=([^&#]+)(&[^#]*)*&p=([0-9]{1,5})([&#]|$)`
@@ -47,8 +48,16 @@ var uriTemplates = [...]uriTemplate{
 
 var datagramBufferPool = sync.Pool{
 	New: func() any {
-		buffer := make([]byte, maxUDPPayloadSize)
+		// Header headroom lets udpToCapsules emit each capsule with a single
+		// ResponseWriter.Write without copying the datagram payload.
+		buffer := make([]byte, maxCapsuleHeaderSize+maxUDPPayloadSize)
 		return &buffer
+	},
+}
+
+var capsuleVarintScratchPool = sync.Pool{
+	New: func() any {
+		return new([8]byte)
 	},
 }
 
@@ -165,22 +174,20 @@ func relayConnectUDPCapsules(udpConn net.Conn, requestBody io.Reader, w http.Res
 }
 
 func capsulesToUDP(udpConn net.Conn, r io.Reader) error {
-	bufPtr := datagramBufferPool.Get().(*[]byte)
-	buf := *bufPtr
-	defer datagramBufferPool.Put(bufPtr)
+	varintScratch := capsuleVarintScratchPool.Get().(*[8]byte)
+	defer capsuleVarintScratchPool.Put(varintScratch)
 
 	for {
-		capsuleType, err := readQUICVarint(r)
+		capsuleType, err := readQUICVarintWithScratch(r, varintScratch)
 		if err != nil {
 			return err
 		}
-		capsuleLen, err := readQUICVarint(r)
+		capsuleLen, err := readQUICVarintWithScratch(r, varintScratch)
 		if err != nil {
 			return fmt.Errorf("reading capsule length: %w", err)
 		}
-		capsule := &io.LimitedReader{R: r, N: int64(capsuleLen)}
 		if capsuleType != datagramCapsuleType {
-			if err := discardCapsule(capsule, buf); err != nil {
+			if err := discardCapsule(r, capsuleLen); err != nil {
 				return fmt.Errorf("discarding unknown capsule: %w", err)
 			}
 			continue
@@ -189,52 +196,71 @@ func capsulesToUDP(udpConn net.Conn, r io.Reader) error {
 			return fmt.Errorf("DATAGRAM capsule length %d exceeds limit", capsuleLen)
 		}
 
-		contextID, err := readQUICVarint(capsule)
+		remaining := capsuleLen
+		contextID, err := readQUICVarintLimited(r, varintScratch, &remaining)
 		if err != nil {
 			return fmt.Errorf("reading CONNECT-UDP context ID: %w", err)
 		}
 		if contextID != connectUDPContextID {
 			// Non-zero context IDs are extension points. RFC 9298 requires an
 			// unknown context to be dropped or briefly buffered.
-			if err := discardCapsule(capsule, buf); err != nil {
+			if err := discardCapsule(r, remaining); err != nil {
 				return fmt.Errorf("discarding unknown CONNECT-UDP context: %w", err)
 			}
 			continue
 		}
-		payload := buf[:int(capsule.N)]
-		if _, err := io.ReadFull(capsule, payload); err != nil {
-			return fmt.Errorf("reading DATAGRAM capsule: %w", err)
-		}
-		n, err := udpConn.Write(payload)
-		if err != nil {
-			return fmt.Errorf("writing UDP datagram: %w", err)
-		}
-		if n != len(payload) {
-			return io.ErrShortWrite
+		if err := writeCapsuleToUDP(udpConn, r, int(remaining)); err != nil {
+			return err
 		}
 	}
 }
 
-func discardCapsule(capsule *io.LimitedReader, buf []byte) error {
-	for capsule.N > 0 {
-		readSize := int64(len(buf))
-		if capsule.N < readSize {
-			readSize = capsule.N
+func writeCapsuleToUDP(udpConn net.Conn, r io.Reader, payloadSize int) error {
+	bufPtr := datagramBufferPool.Get().(*[]byte)
+	storage := *bufPtr
+	payload := storage[maxCapsuleHeaderSize : maxCapsuleHeaderSize+payloadSize]
+	defer datagramBufferPool.Put(bufPtr)
+
+	if _, err := io.ReadFull(r, payload); err != nil {
+		return fmt.Errorf("reading DATAGRAM capsule: %w", err)
+	}
+	n, err := udpConn.Write(payload)
+	if err != nil {
+		return fmt.Errorf("writing UDP datagram: %w", err)
+	}
+	if n != len(payload) {
+		return io.ErrShortWrite
+	}
+	return nil
+}
+
+func discardCapsule(r io.Reader, remaining uint64) error {
+	bufPtr := datagramBufferPool.Get().(*[]byte)
+	storage := *bufPtr
+	buf := storage[maxCapsuleHeaderSize:]
+	defer datagramBufferPool.Put(bufPtr)
+
+	for remaining > 0 {
+		readSize := uint64(len(buf))
+		if remaining < readSize {
+			readSize = remaining
 		}
-		if _, err := io.ReadFull(capsule, buf[:int(readSize)]); err != nil {
+		if _, err := io.ReadFull(r, buf[:int(readSize)]); err != nil {
 			return err
 		}
+		remaining -= readSize
 	}
 	return nil
 }
 
 func udpToCapsules(w http.ResponseWriter, udpConn net.Conn) error {
 	bufPtr := datagramBufferPool.Get().(*[]byte)
-	buf := *bufPtr
+	storage := *bufPtr
+	buf := storage[maxCapsuleHeaderSize:]
 	defer datagramBufferPool.Put(bufPtr)
 
 	controller := http.NewResponseController(w)
-	var header [17]byte // two eight-byte varints plus the one-byte context ID
+	var header [maxCapsuleHeaderSize]byte
 	for {
 		n, err := udpConn.Read(buf)
 		if err != nil {
@@ -244,10 +270,9 @@ func udpToCapsules(w http.ResponseWriter, udpConn net.Conn) error {
 		capsuleHeader := appendQUICVarint(header[:0], datagramCapsuleType)
 		capsuleHeader = appendQUICVarint(capsuleHeader, uint64(n+1)) // context ID 0 is one byte
 		capsuleHeader = appendQUICVarint(capsuleHeader, connectUDPContextID)
-		if err := writeFull(w, capsuleHeader); err != nil {
-			return fmt.Errorf("writing DATAGRAM capsule header: %w", err)
-		}
-		if err := writeFull(w, buf[:n]); err != nil {
+		headerStart := maxCapsuleHeaderSize - len(capsuleHeader)
+		copy(storage[headerStart:maxCapsuleHeaderSize], capsuleHeader)
+		if err := writeFull(w, storage[headerStart:maxCapsuleHeaderSize+n]); err != nil {
 			return fmt.Errorf("writing DATAGRAM capsule: %w", err)
 		}
 		if err := controller.Flush(); err != nil {
@@ -271,7 +296,12 @@ func writeFull(w io.Writer, p []byte) error {
 }
 
 func readQUICVarint(r io.Reader) (uint64, error) {
-	var encoded [8]byte
+	scratch := capsuleVarintScratchPool.Get().(*[8]byte)
+	defer capsuleVarintScratchPool.Put(scratch)
+	return readQUICVarintWithScratch(r, scratch)
+}
+
+func readQUICVarintWithScratch(r io.Reader, encoded *[8]byte) (uint64, error) {
 	if _, err := io.ReadFull(r, encoded[:1]); err != nil {
 		return 0, err
 	}
@@ -280,16 +310,44 @@ func readQUICVarint(r io.Reader) (uint64, error) {
 		return 0, err
 	}
 	encoded[0] &= 0x3f
+	return decodeQUICVarint(encoded, length), nil
+}
 
+func readQUICVarintLimited(r io.Reader, encoded *[8]byte, remaining *uint64) (uint64, error) {
+	if *remaining == 0 {
+		return 0, io.EOF
+	}
+	if _, err := io.ReadFull(r, encoded[:1]); err != nil {
+		return 0, err
+	}
+	*remaining -= 1
+
+	length := 1 << (encoded[0] >> 6)
+	rest := uint64(length - 1)
+	if *remaining < rest {
+		return 0, io.ErrUnexpectedEOF
+	}
+	if _, err := io.ReadFull(r, encoded[1:length]); err != nil {
+		if err == io.EOF {
+			return 0, io.ErrUnexpectedEOF
+		}
+		return 0, err
+	}
+	*remaining -= rest
+	encoded[0] &= 0x3f
+	return decodeQUICVarint(encoded, length), nil
+}
+
+func decodeQUICVarint(encoded *[8]byte, length int) uint64 {
 	switch length {
 	case 1:
-		return uint64(encoded[0]), nil
+		return uint64(encoded[0])
 	case 2:
-		return uint64(binary.BigEndian.Uint16(encoded[:2])), nil
+		return uint64(binary.BigEndian.Uint16(encoded[:2]))
 	case 4:
-		return uint64(binary.BigEndian.Uint32(encoded[:4])), nil
+		return uint64(binary.BigEndian.Uint32(encoded[:4]))
 	case 8:
-		return binary.BigEndian.Uint64(encoded[:]), nil
+		return binary.BigEndian.Uint64(encoded[:])
 	default:
 		panic("invalid QUIC variable integer length")
 	}

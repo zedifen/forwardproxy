@@ -254,10 +254,35 @@ func TestCapsulesToUDPRejectsTruncatedCapsule(t *testing.T) {
 	}
 }
 
+func TestCapsulesToUDPRejectsTruncatedDatagram(t *testing.T) {
+	tests := []struct {
+		name  string
+		value []byte
+	}{
+		{name: "context ID", value: []byte{0x40}},
+		{name: "payload", value: append([]byte{connectUDPContextID}, "short"...)},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			stream := appendQUICVarint(nil, datagramCapsuleType)
+			stream = appendQUICVarint(stream, uint64(len(tt.value)+1))
+			stream = append(stream, tt.value...)
+			conn := newRecordingConn()
+			if err := capsulesToUDP(conn, bytes.NewReader(stream)); !errors.Is(err, io.ErrUnexpectedEOF) {
+				t.Fatalf("capsulesToUDP() error = %v, want unexpected EOF", err)
+			}
+			if len(conn.writes) != 0 {
+				t.Fatalf("forwarded %d truncated datagrams", len(conn.writes))
+			}
+		})
+	}
+}
+
 func TestUDPToCapsules(t *testing.T) {
 	conn := newRecordingConn()
 	conn.reads = [][]byte{[]byte("reply")}
-	w := httptest.NewRecorder()
+	w := &writeCountingResponseWriter{ResponseRecorder: httptest.NewRecorder()}
 	if err := udpToCapsules(w, conn); !errors.Is(err, io.EOF) {
 		t.Fatalf("udpToCapsules() error = %v", err)
 	}
@@ -265,6 +290,64 @@ func TestUDPToCapsules(t *testing.T) {
 	if !bytes.Equal(w.Body.Bytes(), want) {
 		t.Fatalf("response capsules = %x, want %x", w.Body.Bytes(), want)
 	}
+	if w.writes != 1 {
+		t.Fatalf("ResponseWriter.Write calls = %d, want 1", w.writes)
+	}
+}
+
+func BenchmarkCapsulesToUDP(b *testing.B) {
+	payload := make([]byte, 1024)
+	stream := make([]byte, 0, 1024*(len(payload)+8))
+	for range 1024 {
+		stream = appendCapsule(stream, datagramCapsuleType, append([]byte{connectUDPContextID}, payload...))
+	}
+
+	conn := new(discardConn)
+	var src bytes.Reader
+	src.Reset(stream)
+	if err := capsulesToUDP(conn, &src); !errors.Is(err, io.EOF) {
+		b.Fatal(err)
+	}
+
+	b.ReportAllocs()
+	b.SetBytes(int64(len(stream)))
+	b.ResetTimer()
+	for range b.N {
+		src.Reset(stream)
+		if err := capsulesToUDP(conn, &src); !errors.Is(err, io.EOF) {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkUDPToCapsules(b *testing.B) {
+	const packets = 1024
+	conn := &packetConn{payload: make([]byte, 1024)}
+	w := &discardFlushResponseWriter{header: make(http.Header)}
+	conn.remaining = packets
+	if err := udpToCapsules(w, conn); !errors.Is(err, io.EOF) {
+		b.Fatal(err)
+	}
+
+	b.ReportAllocs()
+	b.SetBytes(int64(packets * len(conn.payload)))
+	b.ResetTimer()
+	for range b.N {
+		conn.remaining = packets
+		if err := udpToCapsules(w, conn); !errors.Is(err, io.EOF) {
+			b.Fatal(err)
+		}
+	}
+}
+
+type writeCountingResponseWriter struct {
+	*httptest.ResponseRecorder
+	writes int
+}
+
+func (w *writeCountingResponseWriter) Write(p []byte) (int, error) {
+	w.writes++
+	return w.ResponseRecorder.Write(p)
 }
 
 func appendCapsule(dst []byte, capsuleType uint64, value []byte) []byte {
@@ -277,6 +360,35 @@ type recordingConn struct {
 	reads  [][]byte
 	writes [][]byte
 }
+
+type discardConn struct {
+	recordingConn
+}
+
+func (*discardConn) Write(p []byte) (int, error) { return len(p), nil }
+
+type packetConn struct {
+	recordingConn
+	payload   []byte
+	remaining int
+}
+
+func (c *packetConn) Read(p []byte) (int, error) {
+	if c.remaining == 0 {
+		return 0, io.EOF
+	}
+	c.remaining--
+	return copy(p, c.payload), nil
+}
+
+type discardFlushResponseWriter struct {
+	header http.Header
+}
+
+func (w *discardFlushResponseWriter) Header() http.Header       { return w.header }
+func (*discardFlushResponseWriter) Write(p []byte) (int, error) { return len(p), nil }
+func (*discardFlushResponseWriter) WriteHeader(int)             {}
+func (*discardFlushResponseWriter) Flush()                      {}
 
 func newRecordingConn() *recordingConn { return new(recordingConn) }
 
