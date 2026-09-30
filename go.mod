@@ -6,7 +6,7 @@ require (
 	github.com/caddyserver/caddy/v2 v2.11.4
 	github.com/dunglas/httpsfv v1.1.0
 	github.com/quic-go/quic-go v0.59.1
-	github.com/sagernet/sing v0.8.1
+	github.com/sagernet/sing v0.9.6
 	go.uber.org/mock v0.6.0
 	go.uber.org/zap v1.28.0
 	golang.org/x/net v0.55.0
@@ -144,7 +144,7 @@ require (
 	golang.org/x/mod v0.35.0 // indirect
 	golang.org/x/oauth2 v0.36.0 // indirect
 	golang.org/x/sync v0.20.0 // indirect
-	golang.org/x/sys v0.45.0 // indirect
+	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/term v0.43.0 // indirect
 	golang.org/x/text v0.37.0 // indirect
 	golang.org/x/time v0.15.0 // indirect
