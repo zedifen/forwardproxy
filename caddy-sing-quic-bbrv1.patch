@@ -1,7 +1,22 @@
+diff --git a/go.mod b/go.mod
+index 0673617f..1da4ab23 100644
+--- a/go.mod
++++ b/go.mod
+@@ -22,7 +22,8 @@ require (
+ 	github.com/klauspost/cpuid/v2 v2.4.0
+ 	github.com/mholt/acmez/v3 v3.1.7
+ 	github.com/prometheus/client_golang v1.24.1
+-	github.com/quic-go/quic-go v0.63.0
++	github.com/sagernet/quic-go v0.61.0-sing-box-mod.9
++	github.com/sagernet/sing-quic v0.7.2-0.20261002084117-75c3ac4fa12b
+ 	github.com/smallstep/certificates v0.30.2
+ 	github.com/smallstep/nosql v0.8.0
+ 	github.com/smallstep/truststore v0.13.0
 diff --git a/listeners.go b/listeners.go
+index b5fc8f9e..72c048dd 100644
 --- a/listeners.go
 +++ b/listeners.go
-@@ -29,9 +29,9 @@
+@@ -29,9 +29,9 @@ import (
  	"sync"
  	"sync/atomic"
  
@@ -14,10 +29,26 @@ diff --git a/listeners.go b/listeners.go
  	"go.uber.org/zap"
  	"golang.org/x/time/rate"
  
+diff --git a/modules/caddyhttp/reverseproxy/httptransport.go b/modules/caddyhttp/reverseproxy/httptransport.go
+index 78544257..77dfc85f 100644
+--- a/modules/caddyhttp/reverseproxy/httptransport.go
++++ b/modules/caddyhttp/reverseproxy/httptransport.go
+@@ -32,8 +32,8 @@ import (
+ 	"time"
+ 
+ 	"github.com/pires/go-proxyproto"
+-	"github.com/quic-go/quic-go"
+-	"github.com/quic-go/quic-go/http3"
++	"github.com/sagernet/quic-go"
++	"github.com/sagernet/quic-go/http3"
+ 	"go.uber.org/zap"
+ 	"go.uber.org/zap/zapcore"
+ 	"golang.org/x/net/http2"
 diff --git a/modules/caddyhttp/server.go b/modules/caddyhttp/server.go
+index a1018820..548a1033 100644
 --- a/modules/caddyhttp/server.go
 +++ b/modules/caddyhttp/server.go
-@@ -32,7 +32,9 @@
+@@ -32,7 +32,9 @@ import (
  	"time"
  
  	"github.com/caddyserver/certmagic"
@@ -27,8 +58,8 @@ diff --git a/modules/caddyhttp/server.go b/modules/caddyhttp/server.go
 +	bbr "github.com/sagernet/sing-quic/congestion_meta2"
  	"go.uber.org/zap"
  	"go.uber.org/zap/zapcore"
- 
-@@ -1071,6 +1073,11 @@
+ 	"golang.org/x/net/http/httpguts"
+@@ -1091,6 +1093,11 @@ func (s *Server) serveHTTP3(addr caddy.NetworkAddress, tlsCfg *tls.Config) error
  			// listener and call ServeListener, so anything set here is ignored.
  			// The QUIC settings that actually apply are in NetworkAddress.ListenQUIC.
  			IdleTimeout: time.Duration(s.IdleTimeout),
@@ -40,30 +71,3 @@ diff --git a/modules/caddyhttp/server.go b/modules/caddyhttp/server.go
  		}
  	}
  
-diff --git a/modules/caddyhttp/reverseproxy/httptransport.go b/modules/caddyhttp/reverseproxy/httptransport.go
---- a/modules/caddyhttp/reverseproxy/httptransport.go
-+++ b/modules/caddyhttp/reverseproxy/httptransport.go
-@@ -32,8 +32,8 @@
- 	"time"
- 
- 	"github.com/pires/go-proxyproto"
--	"github.com/quic-go/quic-go"
--	"github.com/quic-go/quic-go/http3"
-+	"github.com/sagernet/quic-go"
-+	"github.com/sagernet/quic-go/http3"
- 	"go.uber.org/zap"
- 	"go.uber.org/zap/zapcore"
- 	"golang.org/x/net/http2"
-diff --git a/go.mod b/go.mod
---- a/go.mod
-+++ b/go.mod
-@@ -22,7 +22,8 @@
- 	github.com/klauspost/cpuid/v2 v2.4.0
- 	github.com/mholt/acmez/v3 v3.1.7
- 	github.com/prometheus/client_golang v1.24.1
--	github.com/quic-go/quic-go v0.63.0
-+	github.com/sagernet/quic-go v0.61.0-sing-box-mod.9
-+	github.com/sagernet/sing-quic v0.7.2-0.20261002084117-75c3ac4fa12b
- 	github.com/smallstep/certificates v0.30.2
- 	github.com/smallstep/nosql v0.8.0
- 	github.com/smallstep/truststore v0.13.0
